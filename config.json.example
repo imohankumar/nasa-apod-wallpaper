@@ -1,0 +1,9 @@
+{
+    "api_key": "DEMO_KEY",
+    "keep_last_n_wallpapers": 30,
+    "show_notifications": true,
+    "max_retries": 3,
+    "retry_delay_base": 2,
+    "timeout": 30,
+    "hd_preferred": true
+}

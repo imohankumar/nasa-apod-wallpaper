@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Unique identifier for the launch agent -->
+    <key>Label</key>
+    <string>com.nasa.wallpaper</string>
+    
+    <!-- Program to execute -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>__SCRIPT_PATH__</string>
+    </array>
+    
+    <!-- Run daily at 8:00 AM -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    
+    <!-- Also run at load (for initial setup or missed runs) -->
+    <key>RunAtLoad</key>
+    <false/>
+    
+    <!-- Working directory -->
+    <key>WorkingDirectory</key>
+    <string>__WORKING_DIR__</string>
+    
+    <!-- Environment variables -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    
+    <!-- Logging - stdout -->
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/nasa_wallpaper_stdout.log</string>
+    
+    <!-- Logging - stderr -->
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/nasa_wallpaper_stderr.log</string>
+    
+    <!-- Only run when user is logged in (LaunchAgents default) -->
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    
+    <!-- Restart on failure with throttle -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    
+    <!-- Throttle interval (minimum 60 seconds between restarts) -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+    
+    <!-- Nice level (lower priority) -->
+    <key>Nice</key>
+    <integer>10</integer>
+    
+    <!-- Process type (background) -->
+    <key>ProcessType</key>
+    <string>Background</string>
+    
+    <!-- Timeout before killing the process -->
+    <key>TimeOut</key>
+    <integer>300</integer>
+</dict>
+</plist>

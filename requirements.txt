@@ -1,0 +1,5 @@
+# NASA APOD Wallpaper - Python Dependencies
+# Install with: pip3 install -r requirements.txt
+
+requests>=2.28.0
+urllib3>=1.26.0

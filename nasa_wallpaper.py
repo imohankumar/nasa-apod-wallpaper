@@ -3,27 +3,26 @@
 NASA Astronomy Picture of the Day (APOD) Wallpaper Setter
 
 This script fetches NASA's daily APOD image and sets it as the macOS desktop wallpaper.
-It includes error handling, retry logic, logging, and duplicate prevention.
+It includes error handling, retry logic, logging, duplicate prevention, and text overlay.
 
 Author: NASA Wallpaper App
 License: MIT
 """
 
-import hashlib
 import json
 import logging
-import os
 import subprocess
 import sys
-import time
-from datetime import datetime, timedelta
+import textwrap
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any
 from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from PIL import Image, ImageDraw, ImageFont
 
 # Constants
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -34,7 +33,12 @@ DEFAULT_CONFIG = {
     "max_retries": 3,
     "retry_delay_base": 2,
     "timeout": 30,
-    "hd_preferred": True
+    "hd_preferred": True,
+    "show_description_overlay": True,
+    "overlay_max_chars": 300,
+    "overlay_opacity": 0.7,
+    "overlay_font_size_title": 28,
+    "overlay_font_size_description": 18
 }
 
 # Directories
@@ -51,17 +55,14 @@ def setup_logging() -> logging.Logger:
     Returns:
         logging.Logger: Configured logger instance.
     """
-    # Ensure log directory exists
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     
     logger = logging.getLogger("nasa_wallpaper")
     logger.setLevel(logging.DEBUG)
     
-    # Prevent duplicate handlers
     if logger.handlers:
         return logger
     
-    # File handler with rotation-friendly format
     file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_format = logging.Formatter(
@@ -70,7 +71,6 @@ def setup_logging() -> logging.Logger:
     )
     file_handler.setFormatter(file_format)
     
-    # Console handler for interactive use
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_format = logging.Formatter("%(levelname)s: %(message)s")
@@ -83,12 +83,7 @@ def setup_logging() -> logging.Logger:
 
 
 def load_config() -> Dict[str, Any]:
-    """
-    Load configuration from config.json file.
-    
-    Returns:
-        Dict[str, Any]: Configuration dictionary with defaults applied.
-    """
+    """Load configuration from config.json file."""
     config = DEFAULT_CONFIG.copy()
     
     if CONFIG_PATH.exists():
@@ -105,15 +100,7 @@ def load_config() -> Dict[str, Any]:
 
 
 def create_session_with_retry(config: Dict[str, Any]) -> requests.Session:
-    """
-    Create a requests session with retry logic and exponential backoff.
-    
-    Args:
-        config: Configuration dictionary containing retry settings.
-        
-    Returns:
-        requests.Session: Configured session with retry adapter.
-    """
+    """Create a requests session with retry logic and exponential backoff."""
     session = requests.Session()
     
     retry_strategy = Retry(
@@ -137,18 +124,7 @@ def fetch_apod_data(
     timeout: int,
     logger: logging.Logger
 ) -> Optional[Dict[str, Any]]:
-    """
-    Fetch APOD metadata from NASA API.
-    
-    Args:
-        session: Requests session with retry logic.
-        api_key: NASA API key.
-        timeout: Request timeout in seconds.
-        logger: Logger instance.
-        
-    Returns:
-        Optional[Dict[str, Any]]: APOD data dictionary or None on failure.
-    """
+    """Fetch APOD metadata from NASA API."""
     api_url = "https://api.nasa.gov/planetary/apod"
     params = {"api_key": api_key}
     
@@ -157,17 +133,12 @@ def fetch_apod_data(
     try:
         response = session.get(api_url, params=params, timeout=timeout)
         
-        # Handle rate limiting
         if response.status_code == 429:
             logger.error("API rate limit exceeded. Please try again later.")
             return None
         
-        # Handle other errors
         if response.status_code != 200:
-            logger.error(
-                f"API request failed with status {response.status_code}: "
-                f"{response.text}"
-            )
+            logger.error(f"API request failed with status {response.status_code}: {response.text}")
             return None
         
         data = response.json()
@@ -192,16 +163,7 @@ def fetch_apod_data(
 
 
 def is_already_downloaded(date: str, logger: logging.Logger) -> bool:
-    """
-    Check if today's APOD has already been downloaded.
-    
-    Args:
-        date: Date string in YYYY-MM-DD format.
-        logger: Logger instance.
-        
-    Returns:
-        bool: True if already downloaded, False otherwise.
-    """
+    """Check if today's APOD has already been downloaded."""
     if not CACHE_FILE.exists():
         return False
     
@@ -219,14 +181,7 @@ def is_already_downloaded(date: str, logger: logging.Logger) -> bool:
 
 
 def save_download_cache(date: str, filename: str, title: str) -> None:
-    """
-    Save download information to cache file.
-    
-    Args:
-        date: Date string in YYYY-MM-DD format.
-        filename: Downloaded filename.
-        title: APOD title.
-    """
+    """Save download information to cache file."""
     cache = {
         "date": date,
         "filename": filename,
@@ -239,20 +194,10 @@ def save_download_cache(date: str, filename: str, title: str) -> None:
 
 
 def get_image_url(apod_data: Dict[str, Any], hd_preferred: bool) -> Optional[str]:
-    """
-    Extract image URL from APOD data, handling video content.
-    
-    Args:
-        apod_data: APOD API response data.
-        hd_preferred: Whether to prefer HD version.
-        
-    Returns:
-        Optional[str]: Image URL or None if not available.
-    """
+    """Extract image URL from APOD data, handling video content."""
     media_type = apod_data.get("media_type", "image")
     
     if media_type == "video":
-        # Try to get video thumbnail
         thumbnail_url = apod_data.get("thumbnail_url")
         if thumbnail_url:
             return thumbnail_url
@@ -267,16 +212,7 @@ def get_image_url(apod_data: Dict[str, Any], hd_preferred: bool) -> Optional[str
 
 
 def validate_image_format(url: str, logger: logging.Logger) -> bool:
-    """
-    Validate that the URL points to a supported image format.
-    
-    Args:
-        url: Image URL to validate.
-        logger: Logger instance.
-        
-    Returns:
-        bool: True if format is valid, False otherwise.
-    """
+    """Validate that the URL points to a supported image format."""
     valid_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".tiff", ".bmp"}
     parsed = urlparse(url)
     path = parsed.path.lower()
@@ -285,7 +221,6 @@ def validate_image_format(url: str, logger: logging.Logger) -> bool:
         if path.endswith(ext):
             return True
     
-    # Check if it might be a valid image without extension
     if "image" in url.lower():
         logger.warning(f"URL may be an image but has unknown extension: {url}")
         return True
@@ -301,29 +236,15 @@ def download_image(
     timeout: int,
     logger: logging.Logger
 ) -> Optional[Path]:
-    """
-    Download image from URL and save to Pictures directory.
-    
-    Args:
-        session: Requests session.
-        url: Image URL.
-        date: Date string for filename.
-        timeout: Request timeout.
-        logger: Logger instance.
-        
-    Returns:
-        Optional[Path]: Path to downloaded image or None on failure.
-    """
-    # Ensure directory exists
+    """Download image from URL and save to Pictures directory."""
     PICTURES_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Determine file extension
     parsed = urlparse(url)
     path_ext = Path(parsed.path).suffix.lower()
     if not path_ext or path_ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
         path_ext = ".jpg"
     
-    filename = f"NASA_APOD_{date}{path_ext}"
+    filename = f"NASA_APOD_{date}_original{path_ext}"
     filepath = PICTURES_DIR / filename
     
     logger.info(f"Downloading image to {filepath}...")
@@ -335,32 +256,22 @@ def download_image(
             logger.error(f"Failed to download image: HTTP {response.status_code}")
             return None
         
-        # Verify content type
         content_type = response.headers.get("content-type", "")
         if not content_type.startswith("image/"):
             logger.error(f"Invalid content type: {content_type}")
             return None
         
-        # Download with progress
-        total_size = int(response.headers.get("content-length", 0))
-        downloaded = 0
-        
         with open(filepath, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
-                    downloaded += len(chunk)
         
-        # Verify file was written
         if filepath.stat().st_size == 0:
             logger.error("Downloaded file is empty")
             filepath.unlink()
             return None
         
-        logger.info(
-            f"Successfully downloaded: {filename} "
-            f"({filepath.stat().st_size / 1024 / 1024:.2f} MB)"
-        )
+        logger.info(f"Successfully downloaded: {filename} ({filepath.stat().st_size / 1024 / 1024:.2f} MB)")
         return filepath
         
     except requests.exceptions.Timeout:
@@ -374,18 +285,153 @@ def download_image(
         return None
 
 
-def set_wallpaper(image_path: Path, logger: logging.Logger) -> bool:
-    """
-    Set macOS desktop wallpaper using AppleScript.
+def get_system_font() -> Optional[str]:
+    """Get a suitable system font path for macOS."""
+    font_paths = [
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/SFNSText.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Geneva.ttf",
+    ]
     
-    Args:
-        image_path: Path to the image file.
-        logger: Logger instance.
+    for font_path in font_paths:
+        if Path(font_path).exists():
+            return font_path
+    
+    return None
+
+
+def add_text_overlay(
+    image_path: Path,
+    title: str,
+    description: str,
+    date: str,
+    config: Dict[str, Any],
+    logger: logging.Logger
+) -> Path:
+    """Add title and description overlay to the bottom-left corner of the image."""
+    if not config.get("show_description_overlay", True):
+        logger.debug("Description overlay disabled in config")
+        return image_path
+    
+    try:
+        logger.info("Adding description overlay to image...")
         
-    Returns:
-        bool: True if successful, False otherwise.
-    """
-    # Verify file exists and is readable
+        img = Image.open(image_path)
+        img = img.convert("RGBA")
+        
+        width, height = img.size
+        
+        max_chars = config.get("overlay_max_chars", 300)
+        opacity = config.get("overlay_opacity", 0.7)
+        title_font_size = config.get("overlay_font_size_title", 28)
+        desc_font_size = config.get("overlay_font_size_description", 18)
+        
+        # Scale font sizes based on image resolution
+        scale_factor = min(width, height) / 1080
+        title_font_size = max(int(title_font_size * scale_factor), 20)
+        desc_font_size = max(int(desc_font_size * scale_factor), 14)
+        
+        # Load fonts
+        font_path = get_system_font()
+        try:
+            if font_path:
+                title_font = ImageFont.truetype(font_path, title_font_size)
+                desc_font = ImageFont.truetype(font_path, desc_font_size)
+            else:
+                title_font = ImageFont.load_default()
+                desc_font = ImageFont.load_default()
+        except Exception as e:
+            logger.warning(f"Could not load font: {e}. Using default.")
+            title_font = ImageFont.load_default()
+            desc_font = ImageFont.load_default()
+        
+        # Truncate description
+        if len(description) > max_chars:
+            description = description[:max_chars - 3] + "..."
+        
+        # Wrap text
+        padding = int(30 * scale_factor)
+        max_text_width = int(width * 0.45)
+        avg_char_width = desc_font_size * 0.6
+        chars_per_line = int(max_text_width / avg_char_width)
+        
+        title_wrapped = textwrap.fill(title, width=chars_per_line)
+        desc_wrapped = textwrap.fill(description, width=chars_per_line)
+        date_text = f"📅 {date}"
+        
+        # Measure text
+        temp_draw = ImageDraw.Draw(img)
+        title_bbox = temp_draw.multiline_textbbox((0, 0), title_wrapped, font=title_font)
+        desc_bbox = temp_draw.multiline_textbbox((0, 0), desc_wrapped, font=desc_font)
+        date_bbox = temp_draw.textbbox((0, 0), date_text, font=desc_font)
+        
+        title_height = title_bbox[3] - title_bbox[1]
+        desc_height = desc_bbox[3] - desc_bbox[1]
+        date_height = date_bbox[3] - date_bbox[1]
+        
+        text_width = max(
+            title_bbox[2] - title_bbox[0],
+            desc_bbox[2] - desc_bbox[0],
+            date_bbox[2] - date_bbox[0]
+        )
+        
+        # Calculate overlay box
+        line_spacing = int(10 * scale_factor)
+        box_width = text_width + (padding * 2)
+        box_height = title_height + desc_height + date_height + (padding * 2) + (line_spacing * 3)
+        
+        margin = int(40 * scale_factor)
+        box_x = margin
+        box_y = height - box_height - margin
+        
+        # Create overlay
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        
+        alpha = int(255 * opacity)
+        corner_radius = int(15 * scale_factor)
+        
+        overlay_draw.rounded_rectangle(
+            [box_x, box_y, box_x + box_width, box_y + box_height],
+            radius=corner_radius,
+            fill=(0, 0, 0, alpha)
+        )
+        
+        img = Image.alpha_composite(img, overlay)
+        draw = ImageDraw.Draw(img)
+        
+        # Draw text
+        text_x = box_x + padding
+        text_y = box_y + padding
+        
+        draw.text((text_x, text_y), date_text, font=desc_font, fill=(180, 180, 180, 255))
+        text_y += date_height + line_spacing
+        
+        draw.multiline_text((text_x, text_y), title_wrapped, font=title_font, fill=(255, 255, 255, 255))
+        text_y += title_height + line_spacing
+        
+        draw.multiline_text((text_x, text_y), desc_wrapped, font=desc_font, fill=(220, 220, 220, 255))
+        
+        # Save
+        output_filename = f"NASA_APOD_{date}.png"
+        output_path = PICTURES_DIR / output_filename
+        
+        img_rgb = img.convert("RGB")
+        img_rgb.save(output_path, "PNG", quality=95)
+        
+        logger.info(f"Created overlay image: {output_filename}")
+        return output_path
+        
+    except Exception as e:
+        logger.error(f"Failed to add text overlay: {e}")
+        logger.info("Falling back to original image without overlay")
+        return image_path
+
+
+def set_wallpaper(image_path: Path, logger: logging.Logger) -> bool:
+    """Set macOS desktop wallpaper using AppleScript."""
     if not image_path.exists():
         logger.error(f"Image file not found: {image_path}")
         return False
@@ -429,25 +475,15 @@ def send_notification(
     show_notifications: bool,
     logger: logging.Logger
 ) -> None:
-    """
-    Send macOS notification with APOD information.
-    
-    Args:
-        title: Notification title.
-        description: Notification description (will be truncated).
-        show_notifications: Whether notifications are enabled.
-        logger: Logger instance.
-    """
+    """Send macOS notification with APOD information."""
     if not show_notifications:
         logger.debug("Notifications disabled, skipping")
         return
     
-    # Truncate description to reasonable length
     max_desc_length = 200
     if len(description) > max_desc_length:
         description = description[:max_desc_length - 3] + "..."
     
-    # Escape special characters for AppleScript
     title = title.replace('"', '\\"').replace("'", "'")
     description = description.replace('"', '\\"').replace("'", "'")
     
@@ -456,38 +492,40 @@ def send_notification(
     '''
     
     try:
-        subprocess.run(
-            ["osascript", "-e", applescript],
-            capture_output=True,
-            timeout=10
-        )
+        subprocess.run(["osascript", "-e", applescript], capture_output=True, timeout=10)
         logger.debug("Notification sent successfully")
     except subprocess.SubprocessError as e:
         logger.warning(f"Could not send notification: {e}")
 
 
 def cleanup_old_wallpapers(keep_count: int, logger: logging.Logger) -> None:
-    """
-    Remove old wallpapers, keeping only the most recent N files.
-    
-    Args:
-        keep_count: Number of wallpapers to keep.
-        logger: Logger instance.
-    """
+    """Remove old wallpapers, keeping only the most recent N files."""
     if keep_count <= 0:
         logger.debug("Cleanup disabled (keep_count <= 0)")
         return
     
     try:
-        # Get all APOD images, sorted by modification time
         images = sorted(
-            [f for f in PICTURES_DIR.glob("NASA_APOD_*") if f.is_file()],
+            [f for f in PICTURES_DIR.glob("NASA_APOD_*") if f.is_file() and not f.name.startswith(".")],
             key=lambda x: x.stat().st_mtime,
             reverse=True
         )
         
-        # Remove files beyond keep count
-        files_to_remove = images[keep_count:]
+        dates_seen = set()
+        files_to_remove = []
+        
+        for filepath in images:
+            name = filepath.stem
+            parts = name.replace("NASA_APOD_", "").split("_")
+            date_part = parts[0] if parts else ""
+            
+            if date_part not in dates_seen:
+                if len(dates_seen) < keep_count:
+                    dates_seen.add(date_part)
+                else:
+                    files_to_remove.append(filepath)
+            elif len(dates_seen) > keep_count:
+                files_to_remove.append(filepath)
         
         for filepath in files_to_remove:
             try:
@@ -504,58 +542,40 @@ def cleanup_old_wallpapers(keep_count: int, logger: logging.Logger) -> None:
 
 
 def main() -> int:
-    """
-    Main entry point for the NASA APOD wallpaper script.
-    
-    Returns:
-        int: Exit code (0 for success, 1 for failure).
-    """
-    # Set up logging
+    """Main entry point for the NASA APOD wallpaper script."""
     logger = setup_logging()
     logger.info("=" * 60)
     logger.info("NASA APOD Wallpaper Script Started")
     logger.info(f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Load configuration
     config = load_config()
     logger.debug(f"Configuration loaded: {json.dumps({k: v for k, v in config.items() if k != 'api_key'}, indent=2)}")
     
-    # Create session with retry logic
     session = create_session_with_retry(config)
     
     try:
-        # Fetch APOD data
-        apod_data = fetch_apod_data(
-            session,
-            config["api_key"],
-            config["timeout"],
-            logger
-        )
+        apod_data = fetch_apod_data(session, config["api_key"], config["timeout"], logger)
         
         if not apod_data:
             logger.error("Failed to fetch APOD data")
             return 1
         
-        # Extract date and check for duplicates
         apod_date = apod_data.get("date", datetime.now().strftime("%Y-%m-%d"))
         
         if is_already_downloaded(apod_date, logger):
-            # Still set wallpaper in case it was changed
-            existing_files = list(PICTURES_DIR.glob(f"NASA_APOD_{apod_date}*"))
+            existing_files = list(PICTURES_DIR.glob(f"NASA_APOD_{apod_date}.png"))
+            if not existing_files:
+                existing_files = list(PICTURES_DIR.glob(f"NASA_APOD_{apod_date}*"))
             if existing_files:
                 set_wallpaper(existing_files[0], logger)
             return 0
         
-        # Check media type and get image URL
         media_type = apod_data.get("media_type", "image")
         
         if media_type == "video":
             thumbnail_url = apod_data.get("thumbnail_url")
             if not thumbnail_url:
-                logger.warning(
-                    f"Today's APOD is a video without thumbnail. "
-                    f"Title: {apod_data.get('title', 'Unknown')}"
-                )
+                logger.warning(f"Today's APOD is a video without thumbnail. Title: {apod_data.get('title', 'Unknown')}")
                 send_notification(
                     apod_data.get("title", "NASA APOD"),
                     "Today's APOD is a video. Visit apod.nasa.gov to watch!",
@@ -565,44 +585,38 @@ def main() -> int:
                 return 0
             logger.info("Today's APOD is a video. Using thumbnail image.")
         
-        # Get image URL
         image_url = get_image_url(apod_data, config["hd_preferred"])
         
         if not image_url:
             logger.error("No valid image URL found in APOD data")
             return 1
         
-        # Validate image format
         if not validate_image_format(image_url, logger):
             logger.error("Invalid or unsupported image format")
             return 1
         
-        # Download image
-        image_path = download_image(
-            session,
-            image_url,
-            apod_date,
-            config["timeout"],
-            logger
-        )
+        image_path = download_image(session, image_url, apod_date, config["timeout"], logger)
         
         if not image_path:
             logger.error("Failed to download image")
             return 1
         
-        # Set wallpaper
-        if not set_wallpaper(image_path, logger):
+        # Add text overlay
+        final_image_path = add_text_overlay(
+            image_path,
+            apod_data.get("title", "NASA Astronomy Picture of the Day"),
+            apod_data.get("explanation", ""),
+            apod_date,
+            config,
+            logger
+        )
+        
+        if not set_wallpaper(final_image_path, logger):
             logger.error("Failed to set wallpaper")
             return 1
         
-        # Save cache
-        save_download_cache(
-            apod_date,
-            image_path.name,
-            apod_data.get("title", "Unknown")
-        )
+        save_download_cache(apod_date, final_image_path.name, apod_data.get("title", "Unknown"))
         
-        # Send notification
         send_notification(
             apod_data.get("title", "NASA APOD"),
             apod_data.get("explanation", "New astronomy picture of the day!"),
@@ -610,7 +624,6 @@ def main() -> int:
             logger
         )
         
-        # Cleanup old wallpapers
         cleanup_old_wallpapers(config["keep_last_n_wallpapers"], logger)
         
         logger.info("NASA APOD Wallpaper Script completed successfully!")

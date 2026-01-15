@@ -310,7 +310,7 @@ def add_text_overlay(
     config: Dict[str, Any],
     logger: logging.Logger
 ) -> Path:
-    """Add title and description overlay to the bottom-left corner of the image."""
+    """Add title and description overlay to the top-left corner of the image."""
     if not config.get("show_description_overlay", True):
         logger.debug("Description overlay disabled in config")
         return image_path
@@ -323,15 +323,15 @@ def add_text_overlay(
         
         width, height = img.size
         
-        max_chars = config.get("overlay_max_chars", 300)
+        max_chars = config.get("overlay_max_chars", 500)  # More chars for 10+ lines
         opacity = config.get("overlay_opacity", 0.7)
-        title_font_size = config.get("overlay_font_size_title", 28)
-        desc_font_size = config.get("overlay_font_size_description", 18)
+        title_font_size = config.get("overlay_font_size_title", 20)  # Smaller
+        desc_font_size = config.get("overlay_font_size_description", 14)  # Smaller
         
         # Scale font sizes based on image resolution
         scale_factor = min(width, height) / 1080
-        title_font_size = max(int(title_font_size * scale_factor), 20)
-        desc_font_size = max(int(desc_font_size * scale_factor), 14)
+        title_font_size = max(int(title_font_size * scale_factor), 16)
+        desc_font_size = max(int(desc_font_size * scale_factor), 11)
         
         # Load fonts
         font_path = get_system_font()
@@ -351,10 +351,10 @@ def add_text_overlay(
         if len(description) > max_chars:
             description = description[:max_chars - 3] + "..."
         
-        # Wrap text
-        padding = int(30 * scale_factor)
-        max_text_width = int(width * 0.45)
-        avg_char_width = desc_font_size * 0.6
+        # Wrap text - narrower width for more lines
+        padding = int(20 * scale_factor)
+        max_text_width = int(width * 0.35)  # 35% of image width
+        avg_char_width = desc_font_size * 0.55
         chars_per_line = int(max_text_width / avg_char_width)
         
         title_wrapped = textwrap.fill(title, width=chars_per_line)
@@ -378,20 +378,22 @@ def add_text_overlay(
         )
         
         # Calculate overlay box
-        line_spacing = int(10 * scale_factor)
+        line_spacing = int(8 * scale_factor)
         box_width = text_width + (padding * 2)
         box_height = title_height + desc_height + date_height + (padding * 2) + (line_spacing * 3)
         
-        margin = int(40 * scale_factor)
+        # TOP-LEFT positioning with margin for menu bar
+        margin = int(30 * scale_factor)
+        menu_bar_offset = int(35 * scale_factor)  # Space for macOS menu bar
         box_x = margin
-        box_y = height - box_height - margin
+        box_y = margin + menu_bar_offset  # Top-left, below menu bar
         
         # Create overlay
         overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
         overlay_draw = ImageDraw.Draw(overlay)
         
         alpha = int(255 * opacity)
-        corner_radius = int(15 * scale_factor)
+        corner_radius = int(12 * scale_factor)
         
         overlay_draw.rounded_rectangle(
             [box_x, box_y, box_x + box_width, box_y + box_height],

@@ -433,42 +433,88 @@ def add_text_overlay(
 
 
 def set_wallpaper(image_path: Path, logger: logging.Logger) -> bool:
-    """Set macOS desktop wallpaper using AppleScript."""
+    """Set macOS desktop wallpaper using multiple methods for compatibility."""
     if not image_path.exists():
         logger.error(f"Image file not found: {image_path}")
         return False
     
-    applescript = f'''
-    tell application "System Events"
-        tell every desktop
-            set picture to "{image_path}"
-        end tell
-    end tell
-    '''
-    
+    image_path_str = str(image_path.resolve())
     logger.info("Setting desktop wallpaper...")
     
+    # Method 1: Try using AppKit (PyObjC) - works best on macOS Sequoia
     try:
+        from AppKit import NSWorkspace, NSScreen
+        from Foundation import NSURL
+        
+        file_url = NSURL.fileURLWithPath_(image_path_str)
+        ws = NSWorkspace.sharedWorkspace()
+        
+        for screen in NSScreen.screens():
+            ws.setDesktopImageURL_forScreen_options_error_(file_url, screen, {}, None)
+        
+        logger.info("Successfully set desktop wallpaper (AppKit method)")
+        return True
+    except ImportError:
+        logger.debug("AppKit not available, trying AppleScript methods")
+    except Exception as e:
+        logger.debug(f"AppKit method failed: {e}")
+    
+    # Method 2: Try Finder AppleScript
+    try:
+        applescript = f'tell application "Finder" to set desktop picture to POSIX file "{image_path_str}"'
         result = subprocess.run(
             ["osascript", "-e", applescript],
             capture_output=True,
             text=True,
             timeout=30
         )
-        
-        if result.returncode != 0:
-            logger.error(f"AppleScript error: {result.stderr}")
-            return False
-        
-        logger.info("Successfully set desktop wallpaper")
-        return True
-        
-    except subprocess.TimeoutExpired:
-        logger.error("Wallpaper setting timed out")
-        return False
-    except subprocess.SubprocessError as e:
-        logger.error(f"Subprocess error: {e}")
-        return False
+        if result.returncode == 0:
+            # Restart Dock to apply changes
+            subprocess.run(["killall", "Dock"], capture_output=True, timeout=10)
+            logger.info("Successfully set desktop wallpaper (Finder method)")
+            return True
+    except Exception as e:
+        logger.debug(f"Finder method failed: {e}")
+    
+    # Method 3: Try System Events AppleScript
+    try:
+        applescript = f'''
+        tell application "System Events"
+            tell every desktop
+                set picture to "{image_path_str}"
+            end tell
+        end tell
+        '''
+        result = subprocess.run(
+            ["osascript", "-e", applescript],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode == 0:
+            logger.info("Successfully set desktop wallpaper (System Events method)")
+            return True
+    except Exception as e:
+        logger.debug(f"System Events method failed: {e}")
+    
+    # Method 4: Try using sqlite to modify desktop picture database
+    try:
+        import sqlite3
+        db_path = Path.home() / "Library/Application Support/Dock/desktoppicture.db"
+        if db_path.exists():
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+            cursor.execute("UPDATE data SET value = ?", (image_path_str,))
+            conn.commit()
+            conn.close()
+            subprocess.run(["killall", "Dock"], capture_output=True, timeout=10)
+            logger.info("Successfully set desktop wallpaper (sqlite method)")
+            return True
+    except Exception as e:
+        logger.debug(f"sqlite method failed: {e}")
+    
+    logger.error("All wallpaper setting methods failed")
+    return False
 
 
 def send_notification(

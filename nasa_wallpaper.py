@@ -38,7 +38,9 @@ DEFAULT_CONFIG = {
     "overlay_max_chars": 300,
     "overlay_opacity": 0.7,
     "overlay_font_size_title": 28,
-    "overlay_font_size_description": 18
+    "overlay_font_size_description": 18,
+    "wallpaper_width": 2880,
+    "wallpaper_height": 1800
 }
 
 # Directories
@@ -302,6 +304,41 @@ def get_system_font() -> Optional[str]:
     return None
 
 
+def crop_to_macbook_resolution(
+    img: Image.Image,
+    target_width: int,
+    target_height: int,
+    logger: logging.Logger
+) -> Image.Image:
+    """
+    Crop and resize image to target resolution (default 2880x1800 for MacBook).
+    Uses center crop to maintain the most interesting part of the image.
+    """
+    original_width, original_height = img.size
+    target_ratio = target_width / target_height
+    original_ratio = original_width / original_height
+    
+    logger.info(f"Original image size: {original_width}x{original_height}")
+    logger.info(f"Target resolution: {target_width}x{target_height}")
+    
+    if original_ratio > target_ratio:
+        # Image is wider than target - crop sides
+        new_width = int(original_height * target_ratio)
+        left = (original_width - new_width) // 2
+        img = img.crop((left, 0, left + new_width, original_height))
+    elif original_ratio < target_ratio:
+        # Image is taller than target - crop top and bottom
+        new_height = int(original_width / target_ratio)
+        top = (original_height - new_height) // 2
+        img = img.crop((0, top, original_width, top + new_height))
+    
+    # Resize to exact target resolution
+    img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+    
+    logger.info(f"Image cropped and resized to: {target_width}x{target_height}")
+    return img
+
+
 def add_text_overlay(
     image_path: Path,
     title: str,
@@ -310,18 +347,29 @@ def add_text_overlay(
     config: Dict[str, Any],
     logger: logging.Logger
 ) -> Path:
-    """Add title and description overlay to the top-left corner of the image."""
-    if not config.get("show_description_overlay", True):
-        logger.debug("Description overlay disabled in config")
-        return image_path
-    
+    """Crop image to MacBook resolution and add title/description overlay to the top-left corner."""
     try:
-        logger.info("Adding description overlay to image...")
+        logger.info("Processing image for MacBook wallpaper...")
         
         img = Image.open(image_path)
         img = img.convert("RGBA")
         
+        # Crop and resize to MacBook resolution (2880x1800)
+        target_width = config.get("wallpaper_width", 2880)
+        target_height = config.get("wallpaper_height", 1800)
+        img = crop_to_macbook_resolution(img, target_width, target_height, logger)
+        
         width, height = img.size
+        
+        if not config.get("show_description_overlay", True):
+            logger.debug("Description overlay disabled in config")
+            # Still save the cropped image
+            output_filename = f"NASA_APOD_{date}.png"
+            output_path = PICTURES_DIR / output_filename
+            img_rgb = img.convert("RGB")
+            img_rgb.save(output_path, "PNG", quality=95)
+            logger.info(f"Created wallpaper (no overlay): {output_filename}")
+            return output_path
         
         max_chars = config.get("overlay_max_chars", 500)  # More chars for 10+ lines
         opacity = config.get("overlay_opacity", 0.7)
@@ -441,25 +489,7 @@ def set_wallpaper(image_path: Path, logger: logging.Logger) -> bool:
     image_path_str = str(image_path.resolve())
     logger.info("Setting desktop wallpaper...")
     
-    # Method 1: Try using AppKit (PyObjC) - works best on macOS Sequoia
-    try:
-        from AppKit import NSWorkspace, NSScreen
-        from Foundation import NSURL
-        
-        file_url = NSURL.fileURLWithPath_(image_path_str)
-        ws = NSWorkspace.sharedWorkspace()
-        
-        for screen in NSScreen.screens():
-            ws.setDesktopImageURL_forScreen_options_error_(file_url, screen, {}, None)
-        
-        logger.info("Successfully set desktop wallpaper (AppKit method)")
-        return True
-    except ImportError:
-        logger.debug("AppKit not available, trying AppleScript methods")
-    except Exception as e:
-        logger.debug(f"AppKit method failed: {e}")
-    
-    # Method 2: Try Finder AppleScript
+    # Method 1: Try Finder AppleScript with Dock restart (most reliable for macOS Sequoia 15+)
     try:
         applescript = f'tell application "Finder" to set desktop picture to POSIX file "{image_path_str}"'
         result = subprocess.run(
@@ -469,14 +499,16 @@ def set_wallpaper(image_path: Path, logger: logging.Logger) -> bool:
             timeout=30
         )
         if result.returncode == 0:
-            # Restart Dock to apply changes
+            # Restart Dock to apply changes - essential for macOS Sequoia
             subprocess.run(["killall", "Dock"], capture_output=True, timeout=10)
             logger.info("Successfully set desktop wallpaper (Finder method)")
             return True
+        else:
+            logger.debug(f"Finder method failed: {result.stderr}")
     except Exception as e:
         logger.debug(f"Finder method failed: {e}")
     
-    # Method 3: Try System Events AppleScript
+    # Method 2: Use osascript with System Events as fallback
     try:
         applescript = f'''
         tell application "System Events"
@@ -492,19 +524,45 @@ def set_wallpaper(image_path: Path, logger: logging.Logger) -> bool:
             timeout=30
         )
         if result.returncode == 0:
+            # Restart Dock to ensure change takes effect
+            subprocess.run(["killall", "Dock"], capture_output=True, timeout=10)
             logger.info("Successfully set desktop wallpaper (System Events method)")
             return True
+        else:
+            logger.debug(f"System Events method failed: {result.stderr}")
     except Exception as e:
         logger.debug(f"System Events method failed: {e}")
     
-    # Method 4: Try using sqlite to modify desktop picture database
+    # Method 3: Try using AppKit (PyObjC)
+    try:
+        from AppKit import NSWorkspace, NSScreen
+        from Foundation import NSURL
+        
+        file_url = NSURL.fileURLWithPath_(image_path_str)
+        ws = NSWorkspace.sharedWorkspace()
+        
+        for screen in NSScreen.screens():
+            result = ws.setDesktopImageURL_forScreen_options_error_(file_url, screen, {}, None)
+        
+        # Restart Dock to ensure change takes effect
+        subprocess.run(["killall", "Dock"], capture_output=True, timeout=10)
+        logger.info("Successfully set desktop wallpaper (AppKit method)")
+        return True
+    except ImportError:
+        logger.debug("AppKit not available")
+    except Exception as e:
+        logger.debug(f"AppKit method failed: {e}")
+    
+    # Method 4: Try using sqlite to modify desktop picture database (macOS Sequoia compatible)
     try:
         import sqlite3
         db_path = Path.home() / "Library/Application Support/Dock/desktoppicture.db"
         if db_path.exists():
             conn = sqlite3.connect(str(db_path))
             cursor = conn.cursor()
-            cursor.execute("UPDATE data SET value = ?", (image_path_str,))
+            # Clear existing data and insert new path
+            cursor.execute("DELETE FROM data")
+            cursor.execute("INSERT INTO data (value) VALUES (?)", (image_path_str,))
             conn.commit()
             conn.close()
             subprocess.run(["killall", "Dock"], capture_output=True, timeout=10)

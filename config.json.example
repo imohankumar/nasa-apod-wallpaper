@@ -5,5 +5,12 @@
     "max_retries": 3,
     "retry_delay_base": 2,
     "timeout": 30,
-    "hd_preferred": true
+    "hd_preferred": true,
+    "show_description_overlay": true,
+    "overlay_max_chars": 300,
+    "overlay_opacity": 0.7,
+    "overlay_font_size_title": 28,
+    "overlay_font_size_description": 18,
+    "wallpaper_width": 2880,
+    "wallpaper_height": 1800
 }
